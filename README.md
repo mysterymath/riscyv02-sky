@@ -19,6 +19,7 @@ registers beat microcode PLAs, questionable addressing modes, and hardware BCD.
 - 2-stage pipeline (Fetch/Execute) with speculative fetch
 - 61 fixed 16-bit instructions
 - 2-cycle interrupt entry (vs 7 on 6502)
+- 13,844 SRAM-adjusted transistors (vs 13,176 for 6502 on same process)
 - 1.0-2.6x faster than 6502 across common routines
 
 ## Documentation

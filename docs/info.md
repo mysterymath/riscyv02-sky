@@ -1,9 +1,9 @@
 ## Overview
 
 RISCY-V02 is a 16-bit RISC processor that is logically pin-compatible with the
-WDC 65C02. On the IHP port, the design fits roughly within the same transistor
-count (~13K SRAM-adjusted) as an off-the-shelf model of the 6502 on the same
-process. This is comparable to the 11K of a 65C02, so we're in the right
+WDC 65C02. The design fits roughly within the same transistor
+count (~14K SRAM-adjusted) as an off-the-shelf model of the 6502 on the same
+process (+5%). This is comparable to the 11K of a 65C02, so we're in the right
 ballpark; hand layout would of course do much better.
 
 In comparison to the 6502, it provides:
@@ -17,6 +17,8 @@ In comparison to the 6502, it provides:
 | 4-cycle calls, 3-4 cycle returns | 6-cycle calls/returns |
 | 2-byte instructions | 1-3 byte instructions, ~2.25 bytes avg (Megaman 5) |
 | 3-cycle 16-bit stack-relative load/store byte | 5/6-cycle 16-bit stack-relative load/store byte |
+| 19,628 transistors (SKY130) | 13,176 transistors (SKY130) |
+| 13,844 SRAM-adjusted transistors | 13,176 SRAM-adjusted transistors |
 
 This project exists to provide evidence against a notion floating around in the
 retrocomputing scene: that the 6502 was a "local optima" in the design space
@@ -701,7 +703,7 @@ complete in one cycle, then the 2-cycle target fetch follows (3 cycles total).
 
 ## Register File SRAM Analysis
 
-Standard cell synthesis implements the register file with DFFs (~32T each) and mux trees, but a real chip would use SRAM cells (~8T each) — the 8×16-bit 2R1W array is perfectly regular. This over-counting inflates the RISCY-V02 transistor count by ~6,200T. The [full SRAM analysis](sram-analysis.md) designs an equivalent 8T SRAM register file from first principles, explains how the cells and clock phases work, and counts every transistor. Summary:
+Standard cell synthesis implements the register file with DFFs (~28T each) and mux trees, but a real chip would use SRAM cells (~8T each) — the 8×16-bit 2R1W array is perfectly regular. This over-counting inflates the RISCY-V02 transistor count by ~5,800T. The [full SRAM analysis](sram-analysis.md) designs an equivalent 8T SRAM register file from first principles, explains how the cells and clock phases work, and counts every transistor. Summary:
 
 | Component | Transistors |
 |---|---|
