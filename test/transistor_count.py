@@ -129,5 +129,48 @@ def main():
     print("  2. Post-synthesis counts (excludes PnR fill/buffer/CTS cells)")
     print("  3. ng (multi-finger) is layout, not additional devices")
 
+    # SRAM-adjusted transistor count
+    # The register file (riscyv02_regfile) is a regular 8x16-bit 2R1W array.
+    # In a real chip this would be 8T SRAM, not standard cell latches.
+    # See docs/sram-analysis.md for full design and justification.
+    #
+    # The regfile uses (* keep_hierarchy *) so its cell counts appear as a
+    # sub-module in stat.json — extracted from the same synthesis run as the
+    # total, eliminating cross-run non-determinism.
+    REGFILE_MODULE = "riscyv02_regfile"
+    REGFILE_SRAM_TX = 1500   # 8T SRAM design (128x8T storage + 354T peripherals + 122T write staging)
+    BASELINE_6502_TX = 13176  # 6502 comparison model (Arlet Ottens' core)
+
+    regfile_key = f"\\{REGFILE_MODULE}"
+    if regfile_key in modules:
+        regfile_cells = modules[regfile_key]["num_cells_by_type"]
+        regfile_stdcell_tx = sum(
+            count * cdl_counts.get(cell, 0) for cell, count in regfile_cells.items()
+        )
+    else:
+        print(f"WARNING: {REGFILE_MODULE} not found as sub-module in stat.json.", file=sys.stderr)
+        print("         Is (* keep_hierarchy *) set on the module?", file=sys.stderr)
+        regfile_stdcell_tx = 0
+
+    discount = regfile_stdcell_tx - REGFILE_SRAM_TX
+    adjusted_tx = total_tx - discount
+    vs_6502_std = (total_tx - BASELINE_6502_TX) / BASELINE_6502_TX * 100
+    vs_6502_adj = (adjusted_tx - BASELINE_6502_TX) / BASELINE_6502_TX * 100
+
+    print()
+    print("SRAM-Adjusted Transistor Count")
+    print("─" * 62)
+    print(f"  {'Standard cell (synthesis):':<40s} {total_tx:>10,d}")
+    print(f"  {'Register file (standard cell):':<40s} {regfile_stdcell_tx:>10,d}")
+    print(f"  {'Register file (8T SRAM equivalent):':<40s} {REGFILE_SRAM_TX:>10,d}")
+    print(f"  {'SRAM discount:':<40s} {-discount:>10,d}")
+    print(f"  {'SRAM-adjusted total:':<40s} {adjusted_tx:>10,d}")
+    print()
+    print(f"  {'vs 6502 ({:,d}):'.format(BASELINE_6502_TX):<40s}")
+    print(f"  {'  Standard cell:':<40s} {vs_6502_std:>+10.1f}%")
+    print(f"  {'  SRAM-adjusted:':<40s} {vs_6502_adj:>+10.1f}%")
+    print()
+    print("  See docs/sram-analysis.md for methodology.")
+
 if __name__ == "__main__":
     main()

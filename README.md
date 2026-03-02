@@ -1,42 +1,86 @@
 ![](../../workflows/gds/badge.svg) ![](../../workflows/docs/badge.svg) ![](../../workflows/test/badge.svg) ![](../../workflows/fpga/badge.svg)
 
-# Tiny Tapeout Verilog Project Template
+# RISCY-V02
 
-- [Read the documentation for project](docs/info.md)
+A 16-bit RISC processor, logically pin-compatible with the WDC 65C02.
+Designed for [Tiny Tapeout](https://tinytapeout.com) SKY130.
 
-## What is Tiny Tapeout?
+## Overview
 
-Tiny Tapeout is an educational project that aims to make it easier and cheaper than ever to get your digital and analog designs manufactured on a real chip.
+RISCY-V02 exists to challenge the notion that the 6502 was a "local optimum"
+in its transistor budget. Given the constraints of 1970s home computers
+(~1 MHz DRAM, so raw clock speed doesn't help), could RISC have been a better
+design choice? This design argues yes: pipelining, barrel shifters, and more
+registers beat microcode PLAs, questionable addressing modes, and hardware BCD.
 
-To learn more and get started, visit https://tinytapeout.com.
+**Highlights:**
 
-## Set up your Verilog project
+- 8x 16-bit general-purpose registers (vs 3x 8-bit on 6502)
+- 2-stage pipeline (Fetch/Execute) with speculative fetch
+- 61 fixed 16-bit instructions
+- 2-cycle interrupt entry (vs 7 on 6502)
+- 1.0-2.6x faster than 6502 across common routines
 
-1. Add your Verilog files to the `src` folder.
-2. Edit the [info.yaml](info.yaml) and update information about your project, paying special attention to the `source_files` and `top_module` properties. If you are upgrading an existing Tiny Tapeout project, check out our [online info.yaml migration tool](https://tinytapeout.github.io/tt-yaml-upgrade-tool/).
-3. Edit [docs/info.md](docs/info.md) and add a description of your project.
-4. Adapt the testbench to your design. See [test/README.md](test/README.md) for more information.
+## Documentation
 
-The GitHub action will automatically build the ASIC files using [LibreLane](https://www.zerotoasiccourse.com/terminology/librelane/).
+The full datasheet is in **[docs/info.md](docs/info.md)**, covering:
 
-## Enable GitHub actions to build the results page
+- Bus protocol and pinout
+- Complete ISA reference with cycle counts
+- Instruction encoding
+- Pipeline timing and self-modifying code rules
+- Interrupt architecture
+- Code comparisons vs 6502 (memcpy, multiply, CRC, etc.)
+- Demo board firmware and programming workflow
+- Bus demux design for async SRAM
 
-- [Enabling GitHub Pages](https://tinytapeout.com/faq/#my-github-action-is-failing-on-the-pages-part)
+## Tiny Tapeout Details
+
+| Property | Value |
+|---|---|
+| Top module | `tt_um_riscyv02` |
+| Tiles | 1x2 |
+| Clock | TBD (fMax binary search pending) |
+| Process | SKY130 |
+| Language | Verilog |
+
+### Pinout
+
+**Inputs (`ui_in`)**
+
+| Pin | Function |
+|---|---|
+| `ui_in[0]` | IRQB (active-low interrupt request) |
+| `ui_in[1]` | NMIB (active-low NMI, edge-triggered) |
+| `ui_in[2]` | RDY (active-high ready) |
+| `ui_in[7:3]` | Unused |
+
+**Outputs (`uo_out`) and Bidirectional (`uio`)**
+
+Pins are time-multiplexed between address and data phases:
+
+| Phase | `uo_out[7:0]` | `uio[7:0]` |
+|---|---|---|
+| Address (clk LOW) | AB[7:0] | AB[15:8] (output) |
+| Data (clk HIGH) | {0, SYNC, RWB} | D[7:0] (bidirectional) |
+
+## Building
+
+### Tests
+
+```
+cd test && make
+```
+
+### Hardening
+
+```
+cd test && make harden
+cd test && make metrics
+```
 
 ## Resources
 
-- [FAQ](https://tinytapeout.com/faq/)
-- [Digital design lessons](https://tinytapeout.com/digital_design/)
-- [Learn how semiconductors work](https://tinytapeout.com/siliwiz/)
-- [Join the community](https://tinytapeout.com/discord)
-- [Build your design locally](https://www.tinytapeout.com/guides/local-hardening/)
-
-## What next?
-
-- [Submit your design to the next shuttle](https://app.tinytapeout.com/).
-- Edit [this README](README.md) and explain your design, how it works, and how to test it.
-- Share your project on your social network of choice:
-  - LinkedIn [#tinytapeout](https://www.linkedin.com/search/results/content/?keywords=%23tinytapeout) [@TinyTapeout](https://www.linkedin.com/company/100708654/)
-  - Mastodon [#tinytapeout](https://chaos.social/tags/tinytapeout) [@matthewvenn](https://chaos.social/@matthewvenn)
-  - X (formerly Twitter) [#tinytapeout](https://twitter.com/hashtag/tinytapeout) [@tinytapeout](https://twitter.com/tinytapeout)
-  - Bluesky [@tinytapeout.com](https://bsky.app/profile/tinytapeout.com)
+- [Tiny Tapeout](https://tinytapeout.com)
+- [LibreLane (hardening flow)](https://www.zerotoasiccourse.com/terminology/librelane/)
+- [TT community Discord](https://tinytapeout.com/discord)
