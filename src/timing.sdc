@@ -43,7 +43,13 @@ create_clock -name clk_data -period $::env(CLOCK_PERIOD) \
 # I/O delays
 # -----------------------------------------------------------------------
 set input_delay_value [expr $::env(CLOCK_PERIOD) * $::env(IO_DELAY_CONSTRAINT) / 100]
-set output_delay_value [expr $::env(CLOCK_PERIOD) * $::env(IO_DELAY_CONSTRAINT) / 100]
+# Output delay models the TT mux round-trip: clk pad → tt_ctrl → tt_mux →
+# project pin → [project logic] → project pin → tt_mux → tt_ctrl → IO pad.
+# The input path (pad → project) adds ~5.7ns to the clock arrival; the output
+# path (project → pad) adds ~16.5ns to data arrival.  Total round-trip
+# penalty on output setup: ~22ns.  Any remaining slack is available as
+# board-level setup margin for external latches/SRAM.
+set output_delay_value 22
 puts "\[INFO] Setting output delay to: $output_delay_value"
 puts "\[INFO] Setting input delay to: $input_delay_value"
 
@@ -80,13 +86,26 @@ set_input_delay $input_delay_value -clock $clocks -clock_fall \
 # -----------------------------------------------------------------------
 # Output delays — dual-edge constraints for muxed bus
 # -----------------------------------------------------------------------
-# Posedge constraint on all outputs (address phase sampling edge).
-set_output_delay $output_delay_value -clock $clocks [all_outputs]
+# Output hold: the TT mux provides >11ns of board-level hold (mux_clk_in_min
+# + CK→Q_fast + mux_out_min ≈ 3 + 0.3 + 8 = 11.3ns), far exceeding any
+# external latch requirement.  No project-pin hold constraint needed.
+set output_hold_value 0
 
-# Negedge constraint on muxed bus outputs (data phase sampling edge).
-# These pins carry both address and data; the false paths below ensure
-# each path is only checked against its correct sampling edge.
-set_output_delay $output_delay_value -clock clk_data -add_delay \
+# Setup (max) — posedge constraint on all outputs (address phase).
+set_output_delay -max $output_delay_value -clock $clocks [all_outputs]
+# Hold (min) — no project-pin hold requirement (mux provides board-level hold).
+set_output_delay -min $output_hold_value -clock $clocks [all_outputs]
+
+# Setup (max) — negedge constraint on muxed bus outputs (data phase).
+set_output_delay -max $output_delay_value -clock clk_data -add_delay \
+    [get_ports {uio_out[0] uio_out[1] uio_out[2] uio_out[3] \
+                uio_out[4] uio_out[5] uio_out[6] uio_out[7] \
+                uo_out[0] uo_out[1] uo_out[2] uo_out[3] \
+                uo_out[4] uo_out[5] uo_out[6] uo_out[7] \
+                uio_oe[0] uio_oe[1] uio_oe[2] uio_oe[3] \
+                uio_oe[4] uio_oe[5] uio_oe[6] uio_oe[7]}]
+# Hold (min) — no project-pin hold requirement (mux provides board-level hold).
+set_output_delay -min $output_hold_value -clock clk_data -add_delay \
     [get_ports {uio_out[0] uio_out[1] uio_out[2] uio_out[3] \
                 uio_out[4] uio_out[5] uio_out[6] uio_out[7] \
                 uo_out[0] uo_out[1] uo_out[2] uo_out[3] \
@@ -142,8 +161,15 @@ set_load $cap_load [all_outputs]
 # -----------------------------------------------------------------------
 # Clock constraints
 # -----------------------------------------------------------------------
-puts "\[INFO] Setting clock uncertainty to: $::env(CLOCK_UNCERTAINTY_CONSTRAINT)"
-set_clock_uncertainty $::env(CLOCK_UNCERTAINTY_CONSTRAINT) $clocks
+# Mux pin-to-pin skew (~2ns, TT 3.5 silicon measurement) adds to setup
+# uncertainty on output paths.  Applied as -setup only — internal hold
+# paths don't traverse the mux and must not pay this penalty.
+set mux_skew 2.0
+set base_uncertainty $::env(CLOCK_UNCERTAINTY_CONSTRAINT)
+set setup_uncertainty [expr $base_uncertainty + $mux_skew]
+puts "\[INFO] Setting clock uncertainty to: setup=$setup_uncertainty hold=$base_uncertainty"
+set_clock_uncertainty -setup $setup_uncertainty $clocks
+set_clock_uncertainty -hold $base_uncertainty $clocks
 
 puts "\[INFO] Setting clock transition to: $::env(CLOCK_TRANSITION_CONSTRAINT)"
 set_clock_transition $::env(CLOCK_TRANSITION_CONSTRAINT) $clocks
