@@ -32,9 +32,21 @@ One of the major points of RISC is that this area is better spent on things
 that make the processor faster: pipelining, barrel shifters, and more
 registers! This design does exactly that.
 
-## How it works
+**Contents**
 
-### Architecture
+**How it works** — [Architecture](#architecture) · [Bus Protocol](#bus-protocol) · [Pinout](#pinout) · [Board-Level Timing](#board-level-timing)
+
+**Instruction Set** — [Registers](#register-naming-convention) · [Reference](#instruction-reference) · [Notes](#notes) · [Idioms](#idioms) · [Code Comparison](#code-comparison-riscy-v02-vs-6502)
+
+**Execution Model** — [Pipeline](#pipeline-and-cycle-counts) · [Reset](#reset) · [Interrupts](#interrupts) · [Self-Modifying Code](#self-modifying-code) · [RDY and SYNC](#rdy-and-sync-signals)
+
+**Demo Board Firmware**
+
+**Reference** — [TT Mux Timing](#tt-mux-timing) · [Demux](#demux-reconstructing-the-bus) · [Instruction Encoding](#instruction-encoding) · [SRAM Analysis](#register-file-sram-analysis)
+
+# How it works
+
+## Architecture {#architecture}
 
 - **8x 16-bit general-purpose registers**: R0-R7 (3-bit encoding)
 - **16-bit program counter**
@@ -45,7 +57,7 @@ registers! This design does exactly that.
 - **Fixed 16-bit instructions**: fetched low byte first
 - **2-stage pipeline**: Fetch,Execute with speculative fetch and redirect
 
-### Bus Protocol
+## Bus Protocol {#bus-protocol}
 
 Like the 65C02, but unlike the 6502, the RISCY-V02 operates as a modern
 edge-triggered design on a single clock. Unfortunately, TT doesn't provide
@@ -60,7 +72,7 @@ latch on the following posedge. Then, the pins are muxed over to expose the
 control outputs and the data (read or write), to be latched on the following
 negedge. Control inputs stay consistent between the two phases.
 
-### Pinout
+## Pinout {#pinout}
 
 **Address Phase**
 - `uo_out[7:0]` = AB[7:0]
@@ -77,10 +89,7 @@ negedge. Control inputs stay consistent between the two phases.
 - `ui_in[1]` = NMIB (active-low non-maskable interrupt, edge-triggered)
 - `ui_in[2]` = RDY (active-high ready signal)
 
-See the Demux section below for how to demultiplex these pins into separate
-address, data, and control signals for connecting to async SRAM and peripherals.
-
-## Board-Level Timing
+## Board-Level Timing {#board-level-timing}
 
 The SDC models the full round-trip through the TT mux (see
 TT Mux Timing below for details). All constraints are STA-verified
@@ -98,19 +107,9 @@ peripherals actually see.
 all 9 corners clean with production mux timing constraints). At 62ns the design
 fails timing at the slow corner.
 
-## How to test
+# Instruction Set
 
-Flash the demo board firmware onto the TT demoboard's RP2350. The firmware emulates 64 KiB of SRAM and a UART peripheral, providing everything the CPU needs to run programs. Load a test binary into the firmware's `mem[]` array, connect to the demoboard's USB serial port, and verify output via the memory-mapped UART.
-
-## External hardware
-
-None — the TT demoboard's RP2350 provides SRAM emulation and I/O. No additional PCB or components are needed.
-
-## Instruction Set
-
-All 61 instructions are fixed 16-bit (2 bytes). Immediates are sign-extended by default; ANDI, ORI, and CLTUI zero-extend instead. PC-relative offsets (branches, J, JAL, AUIPC) are all relative to PC+2 (address of next instruction); the assembler's encoded immediate accounts for this. "Page crossing" means the upper byte of the target address differs from PC+2.
-
-### Register Naming Convention
+## Register Naming Convention {#register-naming-convention}
 
 | Register | Name | Purpose |
 |---|---|---|
@@ -129,7 +128,9 @@ The 3/1/2 split (argument/temporary/callee-saved) among the six free registers f
 
 R6 is a normal GPR — callee-saved, and interrupt handlers that use it must save and restore it manually. The interrupt return address lives in EPC, not R6. R-type loads and stores bypass the R0 convention, allowing explicit selection of both data register and base with no offset.
 
-### Instruction Reference
+## Instruction Reference {#instruction-reference}
+
+All 61 instructions are fixed 16-bit (2 bytes). Immediates are sign-extended by default; ANDI, ORI, and CLTUI zero-extend instead. PC-relative offsets (branches, J, JAL, AUIPC) are all relative to PC+2 (address of next instruction); the assembler's encoded immediate accounts for this. "Page crossing" means the upper byte of the target address differs from PC+2.
 
 **Effect column notation:**
 
@@ -248,7 +249,7 @@ R6 is a normal GPR — callee-saved, and interrupt handlers that use it must sav
 | WAI | Wait for interrupt | halt until interrupt | 2 / halt | Note 8 |
 | STP | Stop | halt until reset | 1 | |
 
-### Notes
+## Notes {#notes}
 
 1. **BZ/BNZ/BT/BF** — Range -256 to +254 bytes. BZ/BNZ test full 16-bit register. Not-taken: 2cy, taken same-page: 3cy, page-crossing: 4cy.
 
@@ -266,7 +267,7 @@ R6 is a normal GPR — callee-saved, and interrupt handlers that use it must sav
 
 8. **WAI** — PC increments past WAI before halt. If I=1, wakes without handler entry.
 
-### Idioms
+## Idioms {#idioms}
 
 - **NOP** — `ADDI R0, 0` (encoding `0x0000`).
 - **Load 16-bit immediate** — `LUI rd, hi(imm16); ADDI rd, lo(imm16)`. When `lo` has bit 7 set, use `hi+1` (same as RISC-V).
@@ -277,7 +278,7 @@ R6 is a normal GPR — callee-saved, and interrupt handlers that use it must sav
 - **Nested interrupts** — Stack EPC and the upper two bits of SRR (ESR), then restore them on entry.
 - **Software breakpoint** — `INT 1` (BRK): handler at $0004.
 
-## Code Comparison: RISCY-V02 vs 6502
+## Code Comparison: RISCY-V02 vs 6502 {#code-comparison-riscy-v02-vs-6502}
 
 Side-by-side assembly for common routines, comparing cycle counts and code sizes. The [full comparison with annotated assembly](https://github.com/mysterymath/riscyv02-sky/blob/main/docs/code-comparison.md) shows every instruction. 6502 library routines use [cc65](https://github.com/cc65/cc65) runtime implementations where applicable. All cycle counts assume same-page branches.
 
@@ -311,7 +312,11 @@ Side-by-side assembly for common routines, comparing cycle counts and code sizes
 
 RISCY-V02 is faster at almost everything — the 16-bit data path eliminates byte-at-a-time serialization. The exceptions: CRC-8 and raster bar IRQ are ties (both dominated by 8-bit operations that map naturally to the 6502), and packed BCD is a clear 6502 win (hardware `SED` mode vs software nibble correction).
 
-## Pipeline and cycle counts
+# Execution Model
+
+Internals of the CPU pipeline, interrupt handling, and special signals.
+
+## Pipeline and cycle counts {#pipeline-and-cycle-counts}
 
 The 2-stage pipeline (Fetch and Execute) overlaps fetch of the next instruction with execution of the current one. For sequential code and not-taken branches, the execute cost is completely hidden — throughput is limited by the 2-cycle fetch. Only taken branches and jumps pay execute cost directly, because the redirect flushes the speculative fetch.
 
@@ -343,7 +348,7 @@ Throughput is measured from one instruction boundary (SYNC) to the next. Three f
 
 **Exec** — cycles the execute unit is busy before the CPU can recognize a pending interrupt. For fetch-limited instructions (exec ≤ 2), this is hidden behind the 2-cycle fetch and doesn't affect throughput, but a 1-cycle exec allows an interrupt to preempt the second fetch cycle.
 
-## Reset
+## Reset {#reset}
 
 - PC is set to $0000 and execution begins
 - I (interrupt disable) is set to 1 -- interrupts are disabled
@@ -357,7 +362,7 @@ reset halfway through a cycle of the bus protocol, and it also ensures correct
 setup and hold timing. A 2-DFF reset synchronizer on the negedge satisfies this
 requirement in systems where reset may arrive asynchronously.
 
-## Interrupts
+## Interrupts {#interrupts}
 
 RISCY-V02 supports maskable IRQ and non-maskable NMI interrupts.
 
@@ -412,7 +417,7 @@ complete in one cycle, then the 2-cycle target fetch follows (3 cycles total).
 
 **Exception state:** EPC is a standalone 16-bit register holding the clean return address. ESR is a 2-bit register holding {I, T} at the time of interrupt entry. Neither is directly addressable through normal register fields. EPC is accessible through EPCR/EPCW. SRR reads `{12'b0, ESR[1:0], I, T}` and SRW writes `ESR = rs[3:2], {I, T} = rs[1:0]`, providing direct access to both live flags and saved exception state in a single instruction. All GP registers (R0-R7) are directly accessible in interrupt context -- there is no register banking.
 
-## Self-Modifying Code
+## Self-Modifying Code {#self-modifying-code}
 
 Because the next instruction's fetch overlaps with the current instruction's execution, **a store is never visible to the immediately following instruction fetch**. The instruction two past the store sees the new value. To fence, insert any instruction between the store and the modified code:
 
@@ -425,7 +430,7 @@ target:         ; this instruction sees the stored value
 A single fence instruction is always sufficient, including for word stores.
 
 
-## RDY and SYNC Signals
+## RDY and SYNC Signals {#rdy-and-sync-signals}
 
 These provide W65C02S-compatible hooks for wait-state insertion, DMA, and single-step debugging — any system that needs to stall the CPU or observe instruction boundaries can use the same techniques as existing 65C02 designs.
 
@@ -443,7 +448,7 @@ To **single-step**, monitor SYNC during data phases and pull RDY low when it goe
 
 For **wait states**, external logic decodes the address during the address phase and pulls RDY low before the data-phase clock edge if the access needs more time. When the memory is ready, RDY goes high and the CPU continues.
 
-## Demo Board Firmware
+# Demo Board Firmware
 
 The TT demoboard's RP2350 (Raspberry Pi Pico 2) can emulate 64 KiB of SRAM and a simple UART peripheral entirely in software, removing the need for external memory hardware. The firmware lives in `firmware/` and uses both RP2350 cores: core 1 runs a tight bus-servicing loop that responds to the CPU's muxed bus protocol, while core 0 bridges a memory-mapped UART peripheral to the demoboard's USB serial port.
 
@@ -553,7 +558,11 @@ Since the RP2350 *is* the memory system, a free-running PWM clock would create t
 
 Core 0 runs the standard Pico SDK USB serial stack and bridges it to the memory-mapped UART peripheral. TX bytes flow through the RP2350's hardware multicore FIFO: core 1 pushes bytes when the CPU writes to `UART_TX_DATA` (`0xFF00`), and core 0 pops them and sends them over USB. RX bytes are single-buffered: core 0 reads from USB into `uart_rx_buf`, and the CPU reads them from `UART_RX_DATA` (`0xFF01`). The status register at `0xFF02` lets the CPU poll for TX readiness (`multicore_fifo_wready`) and RX data availability without side effects.
 
-## TT Mux Timing
+# Reference
+
+Technical appendices for hardware design and tooling.
+
+## TT Mux Timing {#tt-mux-timing}
 
 The TT mux sits between the project tile and the board pins. It is a purely
 combinational path — no registers in the data path. Every signal (clock in,
@@ -588,7 +597,7 @@ TT 3.5 silicon measurements show <2ns of pin-to-pin skew. The SDC adds this
 as setup-only clock uncertainty (`set_clock_uncertainty -setup`), since the skew
 affects output setup margin but not internal hold paths.
 
-## Demux: Reconstructing the Bus
+## Demux: Reconstructing the Bus {#demux-reconstructing-the-bus}
 
 The muxed TT pins must be demultiplexed back into separate address, data, and
 control signals before connecting to SRAM, ROM, or peripherals. A reference
@@ -653,7 +662,7 @@ DATA_DIR = PHI2 & DATA_OE    (1 = CPU driving, 0 = memory driving)
 Or simply use WE#/OE# directly, which already incorporate the phase gating.
 
 
-## Instruction Encoding
+## Instruction Encoding {#instruction-encoding}
 
 This section documents the binary encoding for tools and hardware implementors.
 
@@ -737,7 +746,7 @@ funct4=12+ INT     (vec 0-2 at [7:6]; vec 3 = NOP)
 All other encodings execute as NOP (2-cycle no-op).
 ```
 
-## Register File SRAM Analysis
+## Register File SRAM Analysis {#register-file-sram-analysis}
 
 Standard cell synthesis implements the register file with DFFs (~28T each) and mux trees, but a real chip would use SRAM cells (~8T each) — the 8×16-bit 2R1W array is perfectly regular. This over-counting inflates the RISCY-V02 transistor count by ~5,800T. The [full SRAM analysis](https://github.com/mysterymath/riscyv02-sky/blob/main/docs/sram-analysis.md) designs an equivalent 8T SRAM register file from first principles, explains how the cells and clock phases work, and counts every transistor. Summary:
 
