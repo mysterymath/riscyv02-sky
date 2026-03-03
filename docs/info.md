@@ -1,10 +1,11 @@
 ## Overview
 
 RISCY-V02 is a 16-bit RISC processor that is logically pin-compatible with the
-WDC 65C02. The design fits roughly within the same transistor
-count (~14K SRAM-adjusted) as an off-the-shelf model of the 6502 on the same
-process (+5%). This is comparable to the 11K of a 65C02, so we're in the right
-ballpark; hand layout would of course do much better.
+WDC 65C02. Adjusted for lack of a usable SRAM IP on Tiny Tapeout, the design
+fits roughly within the same transistor count (~14K SRAM-adjusted) as an
+off-the-shelf model of the 6502 on the same process (+5%). This is comparable
+to the 11K of a 65C02, so we're in the right ballpark; hand layout would of
+course do much better.
 
 In comparison to the 6502, it provides:
 
@@ -485,7 +486,7 @@ R6 is a normal GPR — callee-saved, and interrupt handlers that use it must sav
 
 ## Code Comparison: RISCY-V02 vs 6502
 
-Side-by-side assembly for common routines, comparing cycle counts and code sizes. The [full comparison with annotated assembly](code-comparison.md) shows every instruction. 6502 library routines use [cc65](https://github.com/cc65/cc65) runtime implementations where applicable. All cycle counts assume same-page branches.
+Side-by-side assembly for common routines, comparing cycle counts and code sizes. The [full comparison with annotated assembly](https://github.com/mysterymath/riscyv02-sky/blob/main/docs/code-comparison.md) shows every instruction. 6502 library routines use [cc65](https://github.com/cc65/cc65) runtime implementations where applicable. All cycle counts assume same-page branches.
 
 | Routine | 6502 | RISCY-V02 | Speedup | 6502 Size | RISCY-V02 Size |
 |---|---|---|---|---|---|
@@ -585,15 +586,56 @@ For **wait states**, external logic decodes the address during the address phase
 
 ### Board-Level Timing
 
-The SDC models the TT mux round-trip using percentage-based IO delay
-constraints. All constraints are STA-verified at the board pin boundary.
+The SDC models the full round-trip through the TT mux (see
+TT Mux Timing below for details). All constraints are STA-verified
+at the board pin boundary — the numbers below are what external memory and
+peripherals actually see.
 
-**Maximum clock speed.** TBD — use `test/bisect_fmax.sh` to find the
-all-corners-clean period on SKY130. The IHP port achieves 17.5 MHz (57ns);
-the 6502 was ~2.6x slower on SKY130 vs IHP, so expect roughly similar scaling.
+| Parameter | Value | Notes |
+|---|---|---|
+| Clock period | 63ns (15.9 MHz) | fMax, all corners clean |
+| Output hold (all) | >11ns after launching edge | Guaranteed by mux path delay (see below) |
+| Input setup | before negedge | All inputs captured on negedge clk |
+| Input hold | 0ns | DFF hold times are negative across all corners |
 
-For IHP-specific mux timing analysis, see the
-[IHP port documentation](https://github.com/mysterymath/riscyv02/blob/main/docs/info.md#tt-mux-timing).
+**Maximum clock speed.** STA-verified fMax is **15.9 MHz** (63ns period,
+all 9 corners clean with production mux timing constraints). At 62ns the design
+fails timing at the slow corner.
+
+### TT Mux Timing
+
+The TT mux sits between the project tile and the board pins. It is a purely
+combinational path — no registers in the data path. Every signal (clock in,
+data/address out, data in) passes through it, adding asymmetric delay:
+
+| Segment | Input (pad→project) | Output (project→pad) |
+|---|---|---|
+| IO pad (liberty, slow) | ~0.7–4ns | ~4–8ns |
+| tt_ctrl (pad↔spine) | 2.75ns | 2.25ns |
+| tt_mux (spine↔project) | 2.5ns | 7.5ns |
+| **Total** | **~6–9ns** | **~14–18ns** |
+
+IO pad delays vary by process (IHP vs SKY130); the tt_ctrl and tt_mux delays
+are process-independent. The SDC conservatively models the full round-trip as
+22ns (`set_output_delay 22`), which bounds all known process variants.
+
+**Impact on output setup.** The mux adds a full round-trip penalty to output
+setup: the clock arrives at the project late (input path delay), and the output
+arrives at the board pin late (output path delay). The total round-trip cost is
+~22ns. The SDC models this directly, so all remaining slack is real board-level
+setup margin — enough for any reasonable external latch or SRAM setup time.
+
+**Impact on output hold.** The mux *guarantees* board-level hold. Even at the
+fast corner with minimum delays (mux clock input ~3ns + CK→Q ~0.3ns + mux
+output ~8ns ≈ 11.3ns), the output transition at the board pin arrives >11ns
+after the clock edge at the board pin. This far exceeds the ~2ns hold
+requirement of typical external latches and SRAM. The mux makes an explicit
+delay chain unnecessary.
+
+**Pin-to-pin skew.** The mux path is not perfectly matched across all pins.
+TT 3.5 silicon measurements show <2ns of pin-to-pin skew. The SDC adds this
+as setup-only clock uncertainty (`set_clock_uncertainty -setup`), since the skew
+affects output setup margin but not internal hold paths.
 
 ## Instruction Encoding
 
@@ -703,7 +745,7 @@ complete in one cycle, then the 2-cycle target fetch follows (3 cycles total).
 
 ## Register File SRAM Analysis
 
-Standard cell synthesis implements the register file with DFFs (~28T each) and mux trees, but a real chip would use SRAM cells (~8T each) — the 8×16-bit 2R1W array is perfectly regular. This over-counting inflates the RISCY-V02 transistor count by ~5,800T. The [full SRAM analysis](sram-analysis.md) designs an equivalent 8T SRAM register file from first principles, explains how the cells and clock phases work, and counts every transistor. Summary:
+Standard cell synthesis implements the register file with DFFs (~28T each) and mux trees, but a real chip would use SRAM cells (~8T each) — the 8×16-bit 2R1W array is perfectly regular. This over-counting inflates the RISCY-V02 transistor count by ~5,800T. The [full SRAM analysis](https://github.com/mysterymath/riscyv02-sky/blob/main/docs/sram-analysis.md) designs an equivalent 8T SRAM register file from first principles, explains how the cells and clock phases work, and counts every transistor. Summary:
 
 | Component | Transistors |
 |---|---|

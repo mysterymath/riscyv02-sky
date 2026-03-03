@@ -41,7 +41,7 @@ The full datasheet is in **[docs/info.md](docs/info.md)**, covering:
 |---|---|
 | Top module | `tt_um_riscyv02` |
 | Tiles | 1x2 |
-| Clock | TBD (fMax binary search pending) |
+| Clock | 15.9 MHz (63ns period) |
 | Process | SKY130 |
 | Language | Verilog |
 
