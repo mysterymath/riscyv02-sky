@@ -5,7 +5,7 @@ project:
   discord:      ""
   description:  "16-bit RISC processor, logically pin-compatible with WDC 65C02"
   language:     "Verilog"
-  clock_hz:     0
+  clock_hz:     15870000
 
   # How many tiles your design occupies? A single tile is about 167x108 uM.
   tiles: "1x2"
