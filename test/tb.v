@@ -43,6 +43,11 @@ module tb ();
   wire [7:0] uio_out;
   wire [7:0] uio_oe;
 
+`ifdef GL_TEST
+  wire VPWR = 1'b1;
+  wire VGND = 1'b0;
+`endif
+
   // 64KB RAM — zero-initialized.  Program contents are written by cocotb
   // before reset, so the `initial` here is equivalent to flash being
   // blank at manufacturing.
@@ -71,6 +76,10 @@ module tb ();
       .ena    (ena),
       .clk    (clk),
       .rst_n  (rst_n)
+`ifdef GL_TEST
+      , .VPWR (VPWR),
+      .VGND (VGND)
+`endif
   );
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n)

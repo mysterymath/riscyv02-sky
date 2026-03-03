@@ -54,11 +54,13 @@ module tt_um_riscyv02 (
   wire wake = nmi_pending || nmi_edge || !irqb;
   wire cpu_rdy = rdy && !exec_stopped && (!exec_waiting || wake);
   wire cpu_clk;
+  /* verilator lint_off PINMISSING */ // Power pins connected during PnR
   sky130_fd_sc_hd__dlclkp_1 u_cpu_icg (
     .CLK  (clk),
     .GATE (cpu_rdy),
     .GCLK (cpu_clk)
   );
+  /* verilator lint_on PINMISSING */
 
   // -----------------------------------------------------------------------
   // NMI edge detection — ungated clock so edges during RDY=0 are captured.
