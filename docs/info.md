@@ -34,6 +34,17 @@ registers! This design does exactly that.
 
 ## How it works
 
+### Architecture
+
+- **8x 16-bit general-purpose registers**: R0-R7 (3-bit encoding)
+- **16-bit program counter**
+- **T flag**: single-bit condition flag, set by comparisons (CLT, CLTU, CEQ, CLTI, CLTUI, CEQI), shift-through-T instructions (SLLT, SRLT, RLT, RRT), and SRW; tested by BT/BF branches
+- **I flag**: interrupt disable (1 = disabled)
+- **ESR**: 2-bit exception status register {I, T}, saved on interrupt entry, restored by RETI
+- **EPC**: 16-bit exception PC, saved on interrupt entry
+- **Fixed 16-bit instructions**: fetched low byte first
+- **2-stage pipeline**: Fetch,Execute with speculative fetch and redirect
+
 ### Bus Protocol
 
 Like the 65C02, but unlike the 6502, the RISCY-V02 operates as a modern
@@ -69,67 +80,23 @@ negedge. Control inputs stay consistent between the two phases.
 See the Demux section below for how to demultiplex these pins into separate
 address, data, and control signals for connecting to async SRAM and peripherals.
 
-### Architecture
+## Board-Level Timing
 
-- **8x 16-bit general-purpose registers**: R0-R7 (3-bit encoding)
-- **16-bit program counter**
-- **T flag**: single-bit condition flag, set by comparisons (CLT, CLTU, CEQ, CLTI, CLTUI, CEQI), shift-through-T instructions (SLLT, SRLT, RLT, RRT), and SRW; tested by BT/BF branches
-- **I flag**: interrupt disable (1 = disabled)
-- **ESR**: 2-bit exception status register {I, T}, saved on interrupt entry, restored by RETI
-- **EPC**: 16-bit exception PC, saved on interrupt entry
-- **Fixed 16-bit instructions**: fetched low byte first
-- **2-stage pipeline**: Fetch,Execute with speculative fetch and redirect
+The SDC models the full round-trip through the TT mux (see
+TT Mux Timing below for details). All constraints are STA-verified
+at the board pin boundary — the numbers below are what external memory and
+peripherals actually see.
 
-### Reset
-
-- PC is set to $0000 and execution begins
-- I (interrupt disable) is set to 1 -- interrupts are disabled
-- T (condition flag) is cleared to 0
-- ESR is set to {I=1, T=0}
-- All registers are cleared to zero
-
-**Reset deassertion requirement:** Reset may be asserted asynchronously, but it
-must deassert synchronous to `negedge clk`. This guarantees the CPU does not
-reset halfway through a cycle of the bus protocol, and it also ensures correct
-setup and hold timing. A 2-DFF reset synchronizer on the negedge satisfies this
-requirement in systems where reset may arrive asynchronously.
-
-### Interrupts
-
-RISCY-V02 supports maskable IRQ and non-maskable NMI interrupts.
-
-**Vector table** (2-byte spacing; IRQ last for inline handler):
-
-| Vector ID | Address | Trigger |
+| Parameter | Value | Notes |
 |---|---|---|
-| RESET | $0000 | RESB rising edge |
-| 0 (NMI) | $0002 | NMIB falling edge, non-maskable |
-| 1 (BRK) | $0004 | BRK instruction, unconditional |
-| 2 (IRQ) | $0006 | IRQB low, level-sensitive, masked by I=1 |
+| Clock period | 63ns (15.9 MHz) | fMax, all corners clean |
+| Output hold (all) | >11ns after launching edge | Guaranteed by mux path delay (see below) |
+| Input setup | before negedge | All inputs captured on negedge clk |
+| Input hold | 0ns | DFF hold times are negative across all corners |
 
-Each vector slot is one instruction (2 bytes) -- enough for a J trampoline to
-reach the actual handler. IRQ is placed last so its handler can run inline
-without a jump, since nothing follows it.
-
-NMI is edge-triggered; the behavior is broadly similar to the 6502. NMI has
-priority over IRQ; if both are pending simultaneously, NMI is taken first, and
-the subsequent I=1 masks the IRQ. NMI's state is sampled on negedge.
-
-**Warning:** Unlike the 6502, RETI from an NMI handler is undefined behavior.
-NMI overwrites EPC and ESR unconditionally, so if an NMI interrupts an IRQ
-handler before it saves EPC/ESR (via EPCR/SRR), the IRQ's return state is lost.
-SRR/SRW include ESR in bits [3:2], so a single SRR/SRW pair saves and restores
-everything needed for interrupt nesting.
-NMI handlers typically reset, halt, or spin. This is typical of modern RISC
-CPUs: NMI is intended for fatal hardware fault handling.
-
-**Interrupt latency:** 2 cycles from instruction completion in execute stage to
-first handler instruction fetch (dispatch-time redirect + 2-cycle vector
-fetch). NMI edge detection is combinational -- if the falling edge arrives on
-the same cycle that the FSM is ready, the NMI is taken immediately with no
-additional detection delay.
-
-Interrupt implementation details are described later.
+**Maximum clock speed.** STA-verified fMax is **15.9 MHz** (63ns period,
+all 9 corners clean with production mux timing constraints). At 62ns the design
+fails timing at the slow corner.
 
 ## How to test
 
@@ -138,180 +105,6 @@ Flash the demo board firmware onto the TT demoboard's RP2350. The firmware emula
 ## External hardware
 
 None — the TT demoboard's RP2350 provides SRAM emulation and I/O. No additional PCB or components are needed.
-
-## Demux: Reconstructing the Bus
-
-The muxed TT pins must be demultiplexed back into separate address, data, and
-control signals before connecting to SRAM, ROM, or peripherals. A reference
-implementation is provided in
-[`src/tt_um_riscyv02_demux.v`](https://github.com/mysterymath/riscyv02/blob/main/src/tt_um_riscyv02_demux.v);
-what follows is a complete description of the technique.
-
-### Address Latch
-
-Capture `{uio_out, uo_out}` into a 16-bit posedge DFF at posedge clk. At that
-instant, the chip's internal `mux_sel` is still 0 (address phase) because its
-toggle FF hasn't fired yet, so the address is stable with tCQ hold time.
-
-```
-ADDR[15:0] <= {uio_out[7:0], uo_out[7:0]}   @ posedge clk
-```
-
-### RWB and SYNC: Safe-Default Gating
-
-During the address phase (clk LOW), `uo_out` carries address bits — garbage if
-interpreted as control signals. A naive approach (capturing RWB/SYNC into
-negedge DFFs) leaves them one half-cycle stale, causing spurious writes on
-write-to-read transitions when using standard SRAM write-enable formulas.
-
-Instead, gate RWB and SYNC combinationally with clk to present safe defaults
-during the address phase:
-
-```
-RWB  = uo_out[0] | ~clk     (1 = read/safe during address phase)
-SYNC = uo_out[1] & clk      (0 = inactive during address phase)
-```
-
-During the data phase (clk HIGH), the real values pass through unmodified.
-
-### Async SRAM Connection
-
-With safe-defaulted RWB and PHI2 (= clk), the standard 65C02 SRAM formulas
-work directly:
-
-```
-WE# = ~(PHI2 & ~RWB) = ~clk | uo_out[0]
-OE# = ~(PHI2 &  RWB) = ~(clk & uo_out[0])
-```
-
-Both signals are forced inactive during the address phase (clk LOW), preventing
-glitches. During the data phase:
-- **Writes:** WE# goes LOW while clk is HIGH and RWB is 0. Data latches on the
-  WE# rising edge (clk falling).
-- **Reads:** OE# goes LOW while clk is HIGH and RWB is 1. Read data must be
-  valid before the negedge for the CPU to capture it.
-
-### Data Bus Direction
-
-`DATA_OE` (derived from `uio_oe == 8'hFF`) is HIGH during both address phase
-(address output) and write data phase. External bus transceivers should gate it
-with PHI2:
-
-```
-DATA_DIR = PHI2 & DATA_OE    (1 = CPU driving, 0 = memory driving)
-```
-
-Or simply use WE#/OE# directly, which already incorporate the phase gating.
-
-## Demo Board Firmware
-
-The TT demoboard's RP2350 (Raspberry Pi Pico 2) can emulate 64 KiB of SRAM and a simple UART peripheral entirely in software, removing the need for external memory hardware. The firmware lives in `firmware/` and uses both RP2350 cores: core 1 runs a tight bus-servicing loop that responds to the CPU's muxed bus protocol, while core 0 bridges a memory-mapped UART peripheral to the demoboard's USB serial port.
-
-### Building and Flashing
-
-Prerequisites: CMake, Ninja, and the [Pico SDK](https://github.com/raspberrypi/pico-sdk) (v2.2.0). If `PICO_SDK_PATH` is not set, the build system fetches the SDK automatically.
-
-```
-cd firmware
-cmake -B build -G Ninja
-cmake --build build
-```
-
-Flash `build/riscyv02_firmware.uf2` by holding BOOTSEL while plugging in the Pico 2, then dragging the file to the USB mass-storage device that appears.
-
-### Program Upload Protocol
-
-Before starting the CPU, the firmware accepts a binary upload over USB serial:
-
-1. Firmware prints a banner and `Ready` prompt.
-2. Host sends: `L` `<addr_lo>` `<addr_hi>` `<len_lo>` `<len_hi>` `<data...>` — loads `len` bytes into `mem[addr]`.
-3. Firmware prints `OK <len> bytes at 0x<addr>`. Repeat step 2 for additional segments (e.g., code at `0x0000`, vectors at `0x0008`).
-4. Host sends: `G` — firmware launches core 1 and enters the UART bridge loop. Prints `Running`.
-5. Host sends: Ctrl-R (`0x12`) during execution — firmware stops core 1, resets the project, prints `Reset`, and returns to step 1.
-
-### Programming Workflow
-
-The assembler is a Python API in `test/asm.py`. Write a Python script that imports `Asm`, builds a program, and calls `save_binary()` to produce a flat binary. Then use `firmware/upload.py` to upload and run it on the demo board.
-
-**Prerequisites:** `pip install pyserial`
-
-**Hello world example** (`hello.py`):
-
-```python
-#!/usr/bin/env python3
-"""Hello world for RISCY-V02."""
-import sys; sys.path.insert(0, 'test')
-from asm import Asm
-
-a = Asm()
-a.lui(0, 0xFF)           # R0 = 0xFF00 (UART base)
-a.la(1, 'msg')           # R1 = &msg
-a.label('loop')
-a.lbu_rr(2, 1)           # R2 = *R1
-a.bz(2, 'done')          # if null, done
-a.sb(2, 0)               # UART TX = R2
-a.addi(1, 1)             # R1++
-a.j('loop')
-a.label('done')
-a.stp()
-a.label('msg')
-a.string('Hello, world!\n')
-
-a.save_binary('hello.bin')
-print(f"Wrote {max(a.prog.keys())+1} bytes to hello.bin")
-```
-
-**Build and run** (standalone emulator, no hardware needed):
-
-```
-python hello.py                                    # produces hello.bin
-python test/emu.py hello.bin                       # run in emulator
-```
-
-**Or upload to demo board:**
-
-```
-python hello.py                                    # produces hello.bin
-python firmware/upload.py /dev/ttyACM0 hello.bin   # upload and run
-```
-
-**Expected output:**
-
-```
-Hello, world!
-```
-
-The upload script enters transparent terminal mode after launching, so any UART output from the program appears directly. Ctrl-C exits; Ctrl-R resets the board for re-upload without power cycling (`--reset` flag does this automatically before uploading).
-
-### Memory Map
-
-| Address | R/W | Function |
-|---------|-----|----------|
-| `0x0000`–`0xFEFF` | R/W | 64 KiB SRAM (byte-addressable) |
-| `0xFF00` | W | UART TX — written byte is sent over USB serial |
-| `0xFF01` | R | UART RX — reads the next byte received from USB serial |
-| `0xFF02` | R | UART status — bit 0: TX ready, bit 1: RX data available |
-
-The SRAM region covers the full 64 KiB address space except for the UART window at `0xFF00`–`0xFF02`. Reads from `0xFF00` and writes to `0xFF01`/`0xFF02` are don't-care (the firmware ignores them).
-
-### Startup Sequence
-
-The firmware initializes GPIO, selects the RISCY-V02 project on the TT mux, sets `ui_in` to `0x07` (IRQB=1, NMIB=1, RDY=1 — all inactive), resets the project, then enters the upload loop. Core 1 is launched only after receiving the `G` command, at which point it begins driving the clock and servicing the bus. No PWM is used — the clock is entirely software-driven.
-
-### Bus Servicing (Core 1) — Software-Driven Clock
-
-Core 1 drives the project clock directly via GPIO (`gpio_put`), advancing the ASIC one phase at a time. This eliminates all timing pressure — each phase takes as long as it needs, with zero bus contention. The loop:
-
-1. **Address phase (clk LOW):** Read AB[7:0] from `uo_out` and AB[15:8] from `uio`. Speculatively prepare read data from the SRAM array or UART registers.
-2. **Posedge (`gpio_put(clk, 1)`):** The ASIC latches the address and enters data phase.
-3. **Data phase (clk HIGH):** Check RWB (`uo_out[0]`). On a read (RWB=1), drive `uio` with the prepared data byte. On a write (RWB=0), capture `uio` into the SRAM array or UART TX FIFO.
-4. **Release uio, then negedge (`gpio_put(clk, 0)`):** The ASIC latches read data and returns to address phase.
-
-Since the RP2350 *is* the memory system, a free-running PWM clock would create timing races. The software-driven clock is self-throttling, deterministic, and simpler to debug.
-
-### UART Bridge (Core 0)
-
-Core 0 runs the standard Pico SDK USB serial stack and bridges it to the memory-mapped UART peripheral. TX bytes flow through the RP2350's hardware multicore FIFO: core 1 pushes bytes when the CPU writes to `UART_TX_DATA` (`0xFF00`), and core 0 pops them and sends them over USB. RX bytes are single-buffered: core 0 reads from USB into `uart_rx_buf`, and the CPU reads them from `UART_RX_DATA` (`0xFF01`). The status register at `0xFF02` lets the CPU poll for TX readiness (`multicore_fifo_wready`) and RX data availability without side effects.
 
 ## Instruction Set
 
@@ -518,11 +311,9 @@ Side-by-side assembly for common routines, comparing cycle counts and code sizes
 
 RISCY-V02 is faster at almost everything — the 16-bit data path eliminates byte-at-a-time serialization. The exceptions: CRC-8 and raster bar IRQ are ties (both dominated by 8-bit operations that map naturally to the 6502), and packed BCD is a clear 6502 win (hardware `SED` mode vs software nibble correction).
 
-## Pipeline and Timing
+## Pipeline and cycle counts
 
 The 2-stage pipeline (Fetch and Execute) overlaps fetch of the next instruction with execution of the current one. For sequential code and not-taken branches, the execute cost is completely hidden — throughput is limited by the 2-cycle fetch. Only taken branches and jumps pay execute cost directly, because the redirect flushes the speculative fetch.
-
-### Cycle Counts (Throughput)
 
 Throughput is measured from one instruction boundary (SYNC) to the next. Three factors determine the count:
 
@@ -552,7 +343,76 @@ Throughput is measured from one instruction boundary (SYNC) to the next. Three f
 
 **Exec** — cycles the execute unit is busy before the CPU can recognize a pending interrupt. For fetch-limited instructions (exec ≤ 2), this is hidden behind the 2-cycle fetch and doesn't affect throughput, but a 1-cycle exec allows an interrupt to preempt the second fetch cycle.
 
-### Self-Modifying Code
+## Reset
+
+- PC is set to $0000 and execution begins
+- I (interrupt disable) is set to 1 -- interrupts are disabled
+- T (condition flag) is cleared to 0
+- ESR is set to {I=1, T=0}
+- All registers are cleared to zero
+
+**Reset deassertion requirement:** Reset may be asserted asynchronously, but it
+must deassert synchronous to `negedge clk`. This guarantees the CPU does not
+reset halfway through a cycle of the bus protocol, and it also ensures correct
+setup and hold timing. A 2-DFF reset synchronizer on the negedge satisfies this
+requirement in systems where reset may arrive asynchronously.
+
+## Interrupts
+
+RISCY-V02 supports maskable IRQ and non-maskable NMI interrupts.
+
+**Vector table** (2-byte spacing; IRQ last for inline handler):
+
+| Vector ID | Address | Trigger |
+|---|---|---|
+| RESET | $0000 | RESB rising edge |
+| 0 (NMI) | $0002 | NMIB falling edge, non-maskable |
+| 1 (BRK) | $0004 | BRK instruction, unconditional |
+| 2 (IRQ) | $0006 | IRQB low, level-sensitive, masked by I=1 |
+
+Each vector slot is one instruction (2 bytes) -- enough for a J trampoline to
+reach the actual handler. IRQ is placed last so its handler can run inline
+without a jump, since nothing follows it.
+
+NMI is edge-triggered; the behavior is broadly similar to the 6502. NMI has
+priority over IRQ; if both are pending simultaneously, NMI is taken first, and
+the subsequent I=1 masks the IRQ. NMI's state is sampled on negedge.
+
+**Warning:** Unlike the 6502, RETI from an NMI handler is undefined behavior.
+NMI overwrites EPC and ESR unconditionally, so if an NMI interrupts an IRQ
+handler before it saves EPC/ESR (via EPCR/SRR), the IRQ's return state is lost.
+SRR/SRW include ESR in bits [3:2], so a single SRR/SRW pair saves and restores
+everything needed for interrupt nesting.
+NMI handlers typically reset, halt, or spin. This is typical of modern RISC
+CPUs: NMI is intended for fatal hardware fault handling.
+
+**Interrupt latency:** 2 cycles from instruction completion in execute stage to
+first handler instruction fetch (dispatch-time redirect + 2-cycle vector
+fetch). NMI edge detection is combinational -- if the falling edge arrives on
+the same cycle that the FSM is ready, the NMI is taken immediately with no
+additional detection delay.
+
+**Dispatch:** Hardware interrupt entry (IRQ, NMI) is handled at dispatch time
+in a single cycle. When the FSM is ready (instruction completing or idle), the
+hardware saves EPC and ESR, sets I=1, and redirects the PC to the vector
+address. The 2-cycle vector fetch is the only latency. INT and RETI are normal
+1-execute-cycle instructions (like same-page JR): they dispatch to E_EXEC_LO,
+complete in one cycle, then the 2-cycle target fetch follows (3 cycles total).
+
+**Interrupt entry:**
+1. Complete the current instruction
+2. Save ESR = {I, T} -- status flags at interrupt entry
+3. Save EPC = next_PC -- clean 16-bit return address
+4. Set I = 1 -- disable further interrupts
+5. Jump to vector entry
+
+**Interrupt return (RETI instruction):**
+1. Restore {I, T} from ESR
+2. Jump to EPC
+
+**Exception state:** EPC is a standalone 16-bit register holding the clean return address. ESR is a 2-bit register holding {I, T} at the time of interrupt entry. Neither is directly addressable through normal register fields. EPC is accessible through EPCR/EPCW. SRR reads `{12'b0, ESR[1:0], I, T}` and SRW writes `ESR = rs[3:2], {I, T} = rs[1:0]`, providing direct access to both live flags and saved exception state in a single instruction. All GP registers (R0-R7) are directly accessible in interrupt context -- there is no register banking.
+
+## Self-Modifying Code
 
 Because the next instruction's fetch overlaps with the current instruction's execution, **a store is never visible to the immediately following instruction fetch**. The instruction two past the store sees the new value. To fence, insert any instruction between the store and the modified code:
 
@@ -563,6 +423,7 @@ target:         ; this instruction sees the stored value
 ```
 
 A single fence instruction is always sufficient, including for word stores.
+
 
 ## RDY and SYNC Signals
 
@@ -582,27 +443,117 @@ To **single-step**, monitor SYNC during data phases and pull RDY low when it goe
 
 For **wait states**, external logic decodes the address during the address phase and pulls RDY low before the data-phase clock edge if the access needs more time. When the memory is ready, RDY goes high and the CPU continues.
 
-## Timing
+## Demo Board Firmware
 
-### Board-Level Timing
+The TT demoboard's RP2350 (Raspberry Pi Pico 2) can emulate 64 KiB of SRAM and a simple UART peripheral entirely in software, removing the need for external memory hardware. The firmware lives in `firmware/` and uses both RP2350 cores: core 1 runs a tight bus-servicing loop that responds to the CPU's muxed bus protocol, while core 0 bridges a memory-mapped UART peripheral to the demoboard's USB serial port.
 
-The SDC models the full round-trip through the TT mux (see
-TT Mux Timing below for details). All constraints are STA-verified
-at the board pin boundary — the numbers below are what external memory and
-peripherals actually see.
+### Building and Flashing
 
-| Parameter | Value | Notes |
-|---|---|---|
-| Clock period | 63ns (15.9 MHz) | fMax, all corners clean |
-| Output hold (all) | >11ns after launching edge | Guaranteed by mux path delay (see below) |
-| Input setup | before negedge | All inputs captured on negedge clk |
-| Input hold | 0ns | DFF hold times are negative across all corners |
+Prerequisites: CMake, Ninja, and the [Pico SDK](https://github.com/raspberrypi/pico-sdk) (v2.2.0). If `PICO_SDK_PATH` is not set, the build system fetches the SDK automatically.
 
-**Maximum clock speed.** STA-verified fMax is **15.9 MHz** (63ns period,
-all 9 corners clean with production mux timing constraints). At 62ns the design
-fails timing at the slow corner.
+```
+cd firmware
+cmake -B build -G Ninja
+cmake --build build
+```
 
-### TT Mux Timing
+Flash `build/riscyv02_firmware.uf2` by holding BOOTSEL while plugging in the Pico 2, then dragging the file to the USB mass-storage device that appears.
+
+### Program Upload Protocol
+
+Before starting the CPU, the firmware accepts a binary upload over USB serial:
+
+1. Firmware prints a banner and `Ready` prompt.
+2. Host sends: `L` `<addr_lo>` `<addr_hi>` `<len_lo>` `<len_hi>` `<data...>` — loads `len` bytes into `mem[addr]`.
+3. Firmware prints `OK <len> bytes at 0x<addr>`. Repeat step 2 for additional segments (e.g., code at `0x0000`, vectors at `0x0008`).
+4. Host sends: `G` — firmware launches core 1 and enters the UART bridge loop. Prints `Running`.
+5. Host sends: Ctrl-R (`0x12`) during execution — firmware stops core 1, resets the project, prints `Reset`, and returns to step 1.
+
+### Programming Workflow
+
+The assembler is a Python API in `test/asm.py`. Write a Python script that imports `Asm`, builds a program, and calls `save_binary()` to produce a flat binary. Then use `firmware/upload.py` to upload and run it on the demo board.
+
+**Prerequisites:** `pip install pyserial`
+
+**Hello world example** (`hello.py`):
+
+```python
+#!/usr/bin/env python3
+"""Hello world for RISCY-V02."""
+import sys; sys.path.insert(0, 'test')
+from asm import Asm
+
+a = Asm()
+a.lui(0, 0xFF)           # R0 = 0xFF00 (UART base)
+a.la(1, 'msg')           # R1 = &msg
+a.label('loop')
+a.lbu_rr(2, 1)           # R2 = *R1
+a.bz(2, 'done')          # if null, done
+a.sb(2, 0)               # UART TX = R2
+a.addi(1, 1)             # R1++
+a.j('loop')
+a.label('done')
+a.stp()
+a.label('msg')
+a.string('Hello, world!\n')
+
+a.save_binary('hello.bin')
+print(f"Wrote {max(a.prog.keys())+1} bytes to hello.bin")
+```
+
+**Build and run** (standalone emulator, no hardware needed):
+
+```
+python hello.py                                    # produces hello.bin
+python test/emu.py hello.bin                       # run in emulator
+```
+
+**Or upload to demo board:**
+
+```
+python hello.py                                    # produces hello.bin
+python firmware/upload.py /dev/ttyACM0 hello.bin   # upload and run
+```
+
+**Expected output:**
+
+```
+Hello, world!
+```
+
+The upload script enters transparent terminal mode after launching, so any UART output from the program appears directly. Ctrl-C exits; Ctrl-R resets the board for re-upload without power cycling (`--reset` flag does this automatically before uploading).
+
+### Memory Map
+
+| Address | R/W | Function |
+|---------|-----|----------|
+| `0x0000`–`0xFEFF` | R/W | 64 KiB SRAM (byte-addressable) |
+| `0xFF00` | W | UART TX — written byte is sent over USB serial |
+| `0xFF01` | R | UART RX — reads the next byte received from USB serial |
+| `0xFF02` | R | UART status — bit 0: TX ready, bit 1: RX data available |
+
+The SRAM region covers the full 64 KiB address space except for the UART window at `0xFF00`–`0xFF02`. Reads from `0xFF00` and writes to `0xFF01`/`0xFF02` are don't-care (the firmware ignores them).
+
+### Startup Sequence
+
+The firmware initializes GPIO, selects the RISCY-V02 project on the TT mux, sets `ui_in` to `0x07` (IRQB=1, NMIB=1, RDY=1 — all inactive), resets the project, then enters the upload loop. Core 1 is launched only after receiving the `G` command, at which point it begins driving the clock and servicing the bus. No PWM is used — the clock is entirely software-driven.
+
+### Bus Servicing (Core 1) — Software-Driven Clock
+
+Core 1 drives the project clock directly via GPIO (`gpio_put`), advancing the ASIC one phase at a time. This eliminates all timing pressure — each phase takes as long as it needs, with zero bus contention. The loop:
+
+1. **Address phase (clk LOW):** Read AB[7:0] from `uo_out` and AB[15:8] from `uio`. Speculatively prepare read data from the SRAM array or UART registers.
+2. **Posedge (`gpio_put(clk, 1)`):** The ASIC latches the address and enters data phase.
+3. **Data phase (clk HIGH):** Check RWB (`uo_out[0]`). On a read (RWB=1), drive `uio` with the prepared data byte. On a write (RWB=0), capture `uio` into the SRAM array or UART TX FIFO.
+4. **Release uio, then negedge (`gpio_put(clk, 0)`):** The ASIC latches read data and returns to address phase.
+
+Since the RP2350 *is* the memory system, a free-running PWM clock would create timing races. The software-driven clock is self-throttling, deterministic, and simpler to debug.
+
+### UART Bridge (Core 0)
+
+Core 0 runs the standard Pico SDK USB serial stack and bridges it to the memory-mapped UART peripheral. TX bytes flow through the RP2350's hardware multicore FIFO: core 1 pushes bytes when the CPU writes to `UART_TX_DATA` (`0xFF00`), and core 0 pops them and sends them over USB. RX bytes are single-buffered: core 0 reads from USB into `uart_rx_buf`, and the CPU reads them from `UART_RX_DATA` (`0xFF01`). The status register at `0xFF02` lets the CPU poll for TX readiness (`multicore_fifo_wready`) and RX data availability without side effects.
+
+## TT Mux Timing
 
 The TT mux sits between the project tile and the board pins. It is a purely
 combinational path — no registers in the data path. Every signal (clock in,
@@ -636,6 +587,71 @@ delay chain unnecessary.
 TT 3.5 silicon measurements show <2ns of pin-to-pin skew. The SDC adds this
 as setup-only clock uncertainty (`set_clock_uncertainty -setup`), since the skew
 affects output setup margin but not internal hold paths.
+
+## Demux: Reconstructing the Bus
+
+The muxed TT pins must be demultiplexed back into separate address, data, and
+control signals before connecting to SRAM, ROM, or peripherals. A reference
+implementation is provided in
+[`src/tt_um_riscyv02_demux.v`](https://github.com/mysterymath/riscyv02/blob/main/src/tt_um_riscyv02_demux.v);
+what follows is a complete description of the technique.
+
+### Address Latch
+
+Capture `{uio_out, uo_out}` into a 16-bit posedge DFF at posedge clk. At that
+instant, the chip's internal `mux_sel` is still 0 (address phase) because its
+toggle FF hasn't fired yet, so the address is stable with tCQ hold time.
+
+```
+ADDR[15:0] <= {uio_out[7:0], uo_out[7:0]}   @ posedge clk
+```
+
+### RWB and SYNC: Safe-Default Gating
+
+During the address phase (clk LOW), `uo_out` carries address bits — garbage if
+interpreted as control signals. A naive approach (capturing RWB/SYNC into
+negedge DFFs) leaves them one half-cycle stale, causing spurious writes on
+write-to-read transitions when using standard SRAM write-enable formulas.
+
+Instead, gate RWB and SYNC combinationally with clk to present safe defaults
+during the address phase:
+
+```
+RWB  = uo_out[0] | ~clk     (1 = read/safe during address phase)
+SYNC = uo_out[1] & clk      (0 = inactive during address phase)
+```
+
+During the data phase (clk HIGH), the real values pass through unmodified.
+
+### Async SRAM Connection
+
+With safe-defaulted RWB and PHI2 (= clk), the standard 65C02 SRAM formulas
+work directly:
+
+```
+WE# = ~(PHI2 & ~RWB) = ~clk | uo_out[0]
+OE# = ~(PHI2 &  RWB) = ~(clk & uo_out[0])
+```
+
+Both signals are forced inactive during the address phase (clk LOW), preventing
+glitches. During the data phase:
+- **Writes:** WE# goes LOW while clk is HIGH and RWB is 0. Data latches on the
+  WE# rising edge (clk falling).
+- **Reads:** OE# goes LOW while clk is HIGH and RWB is 1. Read data must be
+  valid before the negedge for the CPU to capture it.
+
+### Data Bus Direction
+
+`DATA_OE` (derived from `uio_oe == 8'hFF`) is HIGH during both address phase
+(address output) and write data phase. External bus transceivers should gate it
+with PHI2:
+
+```
+DATA_DIR = PHI2 & DATA_OE    (1 = CPU driving, 0 = memory driving)
+```
+
+Or simply use WE#/OE# directly, which already incorporate the phase gating.
+
 
 ## Instruction Encoding
 
@@ -720,28 +736,6 @@ funct4=12+ INT     (vec 0-2 at [7:6]; vec 3 = NOP)
 
 All other encodings execute as NOP (2-cycle no-op).
 ```
-
-## Interrupt Implementation
-
-**Dispatch:** Hardware interrupt entry (IRQ, NMI) is handled at dispatch time
-in a single cycle. When the FSM is ready (instruction completing or idle), the
-hardware saves EPC and ESR, sets I=1, and redirects the PC to the vector
-address. The 2-cycle vector fetch is the only latency. INT and RETI are normal
-1-execute-cycle instructions (like same-page JR): they dispatch to E_EXEC_LO,
-complete in one cycle, then the 2-cycle target fetch follows (3 cycles total).
-
-**Interrupt entry:**
-1. Complete the current instruction
-2. Save ESR = {I, T} -- status flags at interrupt entry
-3. Save EPC = next_PC -- clean 16-bit return address
-4. Set I = 1 -- disable further interrupts
-5. Jump to vector entry
-
-**Interrupt return (RETI instruction):**
-1. Restore {I, T} from ESR
-2. Jump to EPC
-
-**Exception state:** EPC is a standalone 16-bit register holding the clean return address. ESR is a 2-bit register holding {I, T} at the time of interrupt entry. Neither is directly addressable through normal register fields. EPC is accessible through EPCR/EPCW. SRR reads `{12'b0, ESR[1:0], I, T}` and SRW writes `ESR = rs[3:2], {I, T} = rs[1:0]`, providing direct access to both live flags and saved exception state in a single instruction. All GP registers (R0-R7) are directly accessible in interrupt context -- there is no register banking.
 
 ## Register File SRAM Analysis
 
