@@ -975,7 +975,7 @@ uint8_t bcd_add8(uint8_t a, uint8_t b);
 
 4 instructions, **5 bytes, 9 cycles.**
 
-**RISCY-V02** — a in R0, b in R1, result in R0, R2–R4 scratch
+**RISCY-V02** — a in R0, b in R1, result in R0, R2–R3 scratch
 
 ```
     LI   R2, 0x66       ;  2 cy   2 B    correction constant
@@ -983,24 +983,20 @@ uint8_t bcd_add8(uint8_t a, uint8_t b);
     ADD  R0, R3, R1      ;  2 cy   2 B    t2 = t1 + b
     XOR  R3, R3, R1      ;  2 cy   2 B    t3 = t1 ^ b
     XOR  R3, R0, R3      ;  2 cy   2 B    t4 = t2 ^ t3 (carry bits)
-    LUI  R4, 0x01        ;  2 cy   2 B    \
-    ADDI R4, 0x10        ;  2 cy   2 B    / R4 = 0x0110 (nibble mask)
-    AND  R3, R3, R4      ;  2 cy   2 B    keep only nibble carry bits
-    XOR  R3, R3, R4      ;  2 cy   2 B    invert: 1 = no carry (needs -6)
-    OR   R4, R3, R3      ;  2 cy   2 B    R4 = copy of R3
-    SRLI R4, 2           ;  2 cy   2 B    R4 = R3 >> 2
-    SRLI R3, 3           ;  2 cy   2 B    R3 >>= 3
-    OR   R3, R3, R4      ;  2 cy   2 B    correction = 6 per nibble
+    SRLI R3, 3           ;  2 cy   2 B    nibble carry >> 3
+    ANDI R3, 0x22        ;  2 cy   2 B    isolate carry indicators
+    ADDI R3, 0x66        ;  2 cy   2 B    0x66 + 2 per carried nibble
+    ANDI R3, 0x66        ;  2 cy   2 B    keep 6 only where no carry
     SUB  R0, R0, R3      ;  2 cy   2 B    subtract excess 6
 ```
 
-14 instructions, **28 bytes, 28 cycles.** Branchless; BCD carry in bit 8.
+10 instructions, **20 bytes, 20 cycles.** Branchless; BCD carry in bit 8.
 
 | | 6502 | RISCY-V02 |
 |---|---|---|
-| Code size | 5 B | 28 B |
-| Cycles | 9 cy | 28 cy |
-| Speedup | 1.0× | 0.3× |
+| Code size | 5 B | 20 B |
+| Cycles | 9 cy | 20 cy |
+| Speedup | 1.0× | 0.5× |
 
 ### 16-bit Packed BCD Addition
 
@@ -1144,7 +1140,7 @@ The 6502's advantage continues to erode: it scales at 9 cy per byte, while RISCY
 | Operation | 6502 | | RISCY-V02 | | Speedup |
 |---|---|---|---|---|---|
 | | Bytes | Cycles | Bytes | Cycles | |
-| 8-bit add (2 digits) | 5 | 9 | 28 | 28 | 0.3× |
+| 8-bit add (2 digits) | 5 | 9 | 20 | 20 | 0.5× |
 | 16-bit add (4 digits) | 15 | 24 | 30 | 30 | 0.8× |
 | 32-bit add (8 digits) | 25 | 42 | 68 | 68 | 0.6× |
 

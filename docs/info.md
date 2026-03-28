@@ -306,7 +306,7 @@ Side-by-side assembly for common routines, comparing cycle counts and code sizes
 
 | Width | 6502 Cycles | RISCY-V02 Cycles | Speedup | 6502 Size | RISCY-V02 Size |
 |---|---|---|---|---|---|
-| 2-digit (8-bit) | 9 | 28 | 0.3× | 5 B | 28 B |
+| 2-digit (8-bit) | 9 | 20 | 0.5× | 5 B | 20 B |
 | 4-digit (16-bit) | 24 | 30 | 0.8× | 15 B | 30 B |
 | 8-digit (32-bit) | 42 | 68 | 0.6× | 25 B | 68 B |
 
